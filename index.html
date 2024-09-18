@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenStreetMap with Photo Upload and Editable Markers</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css" />
+    <style>
+        body {
+            background-color: #2d3439;
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            height: 100vh; /* Set the body height to full viewport height */
+        }
+        #map {
+            width: 100%;
+            height: 100vh; /* Cover the full viewport height */
+            transition: width 0.3s ease-in-out;
+        }
+        .upload-box {
+            display: none;
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 20px;
+            background-color: #3d4448;
+            color: #ffffff;
+            border: 1px solid #555;
+            z-index: 1000;
+        }
+        .custom-icon {
+            background: none;
+            border: none;
+        }
+        
+        .sidebar {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 250px;
+            height: 100%;
+            background-color: #3d4448;
+            color: white;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            z-index: 1000;
+            transition: transform 0.3s ease-in-out;
+        }
+        
+        .sidebar.collapsed {
+            transform: translateX(100%);
+        }
+        
+        #toggleSidebar {
+            position: fixed;
+            right: 250px;
+            top: 10px;
+            background-color: #3d4448;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            cursor: pointer;
+            z-index: 1001;
+            transition: right 0.3s ease-in-out;
+        }
+        
+        #toggleSidebar.collapsed {
+            right: 0;
+        }
+        
+        #markerList {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        #markerList li {
+            padding: 10px;
+            border-bottom: 1px solid #555;
+        }
+        
+        .fullscreen-image {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer; /* Make the entire area clickable */
+        }
+        
+        .fullscreen-image img {
+            max-width: 90%;
+            max-height: 90%;
+            object-fit: contain;
+            display: block;   /* Added this line */
+            margin: auto;     /* Added this line */
+            transform: scale(0);
+            transition: transform 0.3s ease-in-out;
+        }
+        
+        .fullscreen-image.active img {
+            transform: scale(1);
+        }
+    </style>
+</head>
+<body>
+    <h1 style="position: absolute; top: 10px; left: 50px; z-index: 1000; margin: 0; color: white;">Memory Map: Pin Your Moments</h1>
+    <h3 style="position: absolute; top: 50px; left: 50px; z-index: 1000; margin: 0; color: white;">Click on the map to add a photo and create a memory marker</h3>
+
+    <div id="map"></div>
+
+    <div id="sidebar" class="sidebar">
+        <h3>Memory List</h3>
+        <ul id="markerList">
+            <li>No memories added yet</li>
+        </ul>
+    </div>
+    <button id="toggleSidebar">✕</button>
+
+    <div class="upload-box" id="uploadBox">
+        <h4>Upload Image</h4>
+        <form id="imageForm" onsubmit="event.preventDefault(); uploadImage();">
+            <input type="file" id="imageInput" accept="image/*"><br><br>
+            <label for="markerText">Enter label text:</label><br>
+            <input type="text" id="markerText"><br><br>
+            <input type="hidden" id="locationLat">
+            <input type="hidden" id="locationLng">
+            <button type="submit">Upload</button>
+            <button type="button" onclick="cancelUpload()">Cancel</button>
+        </form>
+    </div>
+
+    <div id="fullscreenImage" class="fullscreen-image">
+        <img id="fullscreenImg" src="" alt="Fullscreen Image">
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+    <script>
+        // Initialize the map and set view to 205 Richmond St W, Toronto
+        var map = L.map('map', {
+            center: [43.6498, -79.3885],
+            zoom: 17,
+            minZoom: 3,
+            maxZoom: 19
+        });
+
+        // Set background color for the map container
+        map.getContainer().style.background = '#2d3439';
+
+        // Add CartoDB Dark Matter tiles for dark mode
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+            subdomains: 'abcd',
+            maxZoom: 19,
+            tileSize: 512,
+            zoomOffset: -1
+        }).addTo(map);
+
+        // Create a marker cluster group with a higher maxZoom to reduce clustering
+        var markerClusterGroup = L.markerClusterGroup({
+            spiderfyOnMaxZoom: false,
+            showCoverageOnHover: false,
+            zoomToBoundsOnClick: true,
+            disableClusteringAtZoom: 14
+        });
+
+        // Add the marker cluster group to the map
+        map.addLayer(markerClusterGroup);
+
+        // Declare arrays to store markers and connections
+        let markers = [];
+        let connections = [];
+
+        // Add event listeners for zoom and cluster events
+        map.on('zoomend', toggleConnectionsVisibility);
+        markerClusterGroup.on('animationend', toggleConnectionsVisibility);
+        markerClusterGroup.on('clusteringend', toggleConnectionsVisibility);
+        markerClusterGroup.on('unspiderfied', toggleConnectionsVisibility);
+
+        // Function to toggle connection visibility
+        function toggleConnectionsVisibility() {
+            connections.forEach(connection => {
+                let startMarker = connection.getLatLngs()[0];
+                let endMarker = connection.getLatLngs()[1];
+                let startVisible = map.getBounds().contains(startMarker);
+                let endVisible = map.getBounds().contains(endMarker);
+                if (startVisible && endVisible) {
+                    if (!map.hasLayer(connection)) {
+                        connection.addTo(map);
+                    }
+                } else {
+                    if (map.hasLayer(connection)) {
+                        map.removeLayer(connection);
+                    }
+                }
+            });
+        }
+
+        // Click event to open the image upload dialog
+        map.on('click', function(e) {
+            // Only show upload box if we're not clicking on a cluster
+            if (!e.layer || !e.layer._childClusters) {
+                let latitude = e.latlng.lat;
+                let longitude = e.latlng.lng;
+
+                // Show the upload box and set location values
+                document.getElementById('uploadBox').style.display = 'block';
+                document.getElementById('locationLat').value = latitude;
+                document.getElementById('locationLng').value = longitude;
+            }
+        });
+
+        // Variable to keep track of the marker count
+        let markerCount = 0;
+
+        // Function to upload the image and place a draggable marker with the image and text
+        function uploadImage() {
+            let fileInput = document.getElementById('imageInput');
+            let latitude = document.getElementById('locationLat').value;
+            let longitude = document.getElementById('locationLng').value;
+            let markerText = document.getElementById('markerText').value || "No text";
+            
+            // Increment the marker count
+            markerCount++;
+
+            if (fileInput.files.length === 0) {
+                alert('Please select an image to upload!');
+                return;
+            }
+
+            let imageURL = URL.createObjectURL(fileInput.files[0]);
+
+            // Add a draggable marker at the clicked location with the image as an icon
+            let marker = L.marker([latitude, longitude], { draggable: true });
+
+            let imageIcon = L.divIcon({
+                html: `<div style="background-color: white; border-radius: 50%; width: 60px; height: 60px; display: flex; justify-content: center; align-items: center; overflow: hidden; border: 3px solid #ffffff;">
+                           <img src="${imageURL}" style="width: 100%; height: 100%; object-fit: cover;" />
+                       </div>
+                       <div style="text-align: center; margin-top: 5px;">
+                           <span style="background-color: white; color: black; padding: 2px 5px; border-radius: 3px;">
+                               <strong>${markerCount}.</strong> ${markerText}
+                           </span>
+                       </div>`,
+                className: 'custom-icon',
+                iconSize: [70, 70],
+                iconAnchor: [35, 35]
+            });
+
+            marker.setIcon(imageIcon);
+
+            // Add the marker to the cluster group
+            markerClusterGroup.addLayer(marker);
+
+            // Connect to the previous marker if it exists
+            if (markers.length > 0) {
+                let previousMarker = markers[markers.length - 1];
+                let connection = L.polyline([previousMarker.getLatLng(), marker.getLatLng()], {
+                    color: 'white',
+                    weight: 2,
+                    opacity: 0.7
+                });
+                connections.push(connection);
+                connection.addTo(map);
+            }
+
+            // Add the new marker to the array
+            markers.push(marker);
+
+            // Update connections when marker is dragged
+            marker.on('drag', function(e) {
+                updateConnections(this);
+            });
+
+            // Hide the upload box after placing the marker
+            document.getElementById('uploadBox').style.display = 'none';
+            document.getElementById('imageForm').reset();
+
+            toggleConnectionsVisibility();
+
+            marker.options.title = markerText;  // Set the marker title
+            updateSidebarList();  // Update the sidebar list
+
+            marker.on('click', function(e) {
+                L.DomEvent.stopPropagation(e);
+                showFullscreenImage(imageURL, this);
+            });
+        }
+
+        // Function to update connections when markers are moved
+        function updateConnections(draggedMarker) {
+            connections.forEach((connection, index) => {
+                if (markers[index] === draggedMarker || markers[index + 1] === draggedMarker) {
+                    let startMarker = markers[index];
+                    let endMarker = markers[index + 1];
+                    connection.setLatLngs([startMarker.getLatLng(), endMarker.getLatLng()]);
+                }
+            });
+        }
+
+        function cancelUpload() {
+            document.getElementById('uploadBox').style.display = 'none';
+            document.getElementById('imageForm').reset();
+        }
+
+        // Function to update the sidebar list
+        function updateSidebarList() {
+            const markerList = document.getElementById('markerList');
+            markerList.innerHTML = '';
+            markers.forEach((marker, index) => {
+                const li = document.createElement('li');
+                li.textContent = `${index + 1}. ${marker.options.title || 'Unnamed'}`;
+                markerList.appendChild(li);
+            });
+        }
+
+        // Function to update map size
+        function updateMapSize() {
+            const sidebar = document.getElementById('sidebar');
+            const mapDiv = document.getElementById('map');
+            if (sidebar.classList.contains('collapsed')) {
+                mapDiv.style.width = '100%';
+            } else {
+                mapDiv.style.width = 'calc(100% - 250px)';
+            }
+            map.invalidateSize();
+        }
+
+        // Update the sidebar toggle functionality
+        document.getElementById('toggleSidebar').addEventListener('click', function() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('collapsed');
+            this.classList.toggle('collapsed');
+            this.textContent = sidebar.classList.contains('collapsed') ? '≡' : '✕';
+            
+            updateMapSize();
+        });
+
+        // Initialize the sidebar in expanded state
+        document.getElementById('sidebar').classList.remove('collapsed');
+        document.getElementById('toggleSidebar').textContent = '✕';
+        updateMapSize();
+
+        // Add event listener for window resize
+        window.addEventListener('resize', updateMapSize);
+
+        function showFullscreenImage(imageURL, marker) {
+            const fullscreenImage = document.getElementById('fullscreenImage');
+            const fullscreenImg = document.getElementById('fullscreenImg');
+            
+            fullscreenImg.src = imageURL;
+            fullscreenImage.style.display = 'flex';
+            
+            // Get marker's pixel coordinates
+            const markerPixel = map.latLngToContainerPoint(marker.getLatLng());
+            
+            // Set initial position and scale
+            fullscreenImg.style.transformOrigin = `${markerPixel.x}px ${markerPixel.y}px`;
+            fullscreenImg.style.transform = 'scale(0)';
+            
+            // Trigger reflow
+            fullscreenImg.offsetWidth;
+            
+            // Animate to full size
+            requestAnimationFrame(() => {
+                fullscreenImg.style.transform = 'scale(1)';
+            });
+        }
+
+        function closeFullscreenImage() {
+            const fullscreenImage = document.getElementById('fullscreenImage');
+            const fullscreenImg = document.getElementById('fullscreenImg');
+            
+            fullscreenImg.style.transform = 'scale(0)';
+            
+            // Wait for animation to finish before hiding
+            setTimeout(() => {
+                fullscreenImage.style.display = 'none';
+            }, 300);
+        }
+
+        // Add event listeners for fullscreen image
+        document.getElementById('fullscreenImage').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeFullscreenImage();
+            }
+        });
+
+        document.getElementById('fullscreenImg').addEventListener('click', function(e) {
+            e.stopPropagation();
+        });
+    </script>
+
+</body>
+</html>
