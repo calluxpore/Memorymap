@@ -1,6 +1,7 @@
 # Memory Map: Pin Your Moments
 This project is a web application that allows users to upload photos and create editable markers on an interactive map using OpenStreetMap and Leaflet. The goal is to let users pin memorable moments on the map with a photo and description.
 
+Live pages: https://calluxpore.github.io/Memorymap/
 ---
 
 ## Features
